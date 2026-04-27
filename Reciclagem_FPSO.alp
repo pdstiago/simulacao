@@ -18,7 +18,7 @@
 		<ActiveObjectClass>
 			<Id>1777188281278</Id>
 			<Name><![CDATA[Main]]></Name>
-			<AdditionalClassCode><![CDATA[public int limiteFPSOsTeste = 3;  // mude para quantas quiser testar
+			<AdditionalClassCode><![CDATA[public int limiteFPSOsTeste = 3; // mude para quantas quiser testar
 public int fpsosInjetadas = 0;
 
 public static final String[] NOMES_MATERIAIS = {
@@ -133,11 +133,11 @@ public void despacharMaterial(Instalacao inst, int i) {
 
         // Se nenhum destinador tem capacidade, parar
         if (selecionado == null){
-        	//traceln("=== DESPACHO BLOQUEADO === Mês " + String.format("%.2f", time())
-           //     + " | Instalação: " + inst.nome
-            //    + " | Material: " + tipoMaterialBusca
-             //   + " | Estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
-             //   + " | Motivo: nenhum destinador com capacidade");
+        	traceln("=== DESPACHO BLOQUEADO === Mês " + String.format("%.2f", time())
+                + " | Instalação: " + inst.nome
+                + " | Material: " + tipoMaterialBusca
+                + " | Estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
+                + " | Motivo: nenhum destinador com capacidade");
         	break;
         }
         
@@ -181,16 +181,16 @@ public void despacharMaterial(Instalacao inst, int i) {
     	
     	enterLote.take(lote);
     	
-    	//traceln("=== DESPACHO === Mês " + String.format("%.2f", time())
-         //   + " | Instalação: " + inst.nome
-         //   + " | Material: " + tipoMaterialBusca
-         //   + " | Volume: " + String.format("%.2f", volumeAEnviar) + "t"
-         //   + " | Destinador: " + selecionado.razaoSocial
-         //   + " | Distância: " + String.format("%.1f", menorDist) + " km"
-         //   + " | Tempo transporte: " + String.format("%.4f", tempoMeses) + " meses"
-          //  + " | Restante estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
-          //  + " | Destinador utilização: " + String.format("%.2f", selecionado.volumeRecebidoNoAno) 
-          //  + "/" + String.format("%.2f", selecionado.capAtualAno) + " t/ano");
+    	traceln("=== DESPACHO === Mês " + String.format("%.2f", time())
+            + " | Instalação: " + inst.nome
+            + " | Material: " + tipoMaterialBusca
+            + " | Volume: " + String.format("%.2f", volumeAEnviar) + "t"
+            + " | Destinador: " + selecionado.razaoSocial
+            + " | Distância: " + String.format("%.1f", menorDist) + " km"
+            + " | Tempo transporte: " + String.format("%.4f", tempoMeses) + " meses"
+            + " | Restante estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
+            + " | Destinador utilização: " + String.format("%.2f", selecionado.volumeRecebidoNoAno) 
+            + "/" + String.format("%.2f", selecionado.capAtualAno) + " t/ano");
     }
 }
 
@@ -315,7 +315,7 @@ public void tentarLiberar() {
 }]]></AdditionalClassCode>
 			<StartupCode><![CDATA[for (int i = 0; i < 57; i++) {
     FPSO fpso = new FPSO();
-    fpso.sigla = excelData.getCellStringValue("FPSOs", i + 2, 1);  // linha i+2, coluna A
+    fpso.sigla = excelData.getCellStringValue("FPSOs", i + 2, 1);
     fpso.nome = excelData.getCellStringValue("FPSOs", i + 2, 2);
     String bacia = excelData.getCellStringValue("FPSOs", i + 2, 3);
     fpso.bacia = (bacia != null) ? bacia : "";
@@ -766,8 +766,8 @@ for (FPSO fpso : listaFPSOs) {
     if (fpsosInjetadas >= limiteFPSOsTeste) break;
 
     if (fpso.anoDescomissionamento == anoAtual) {
-        filaPendente.add(fpso);   // guardar os dados na fila
-        source.inject(1);         // criar 1 agente vazio do tipo FPSO
+        filaPendente.add(fpso); // guardar os dados na fila
+        source.inject(1); // criar 1 agente vazio do tipo FPSO
         fpsosInjetadas++;
     }
 }]]></Action>
@@ -810,9 +810,7 @@ for (Destinador dest : listaDestinadores) {
 // Checar se precisa despachar algum material depois de um mes
 for (Instalacao inst : listaInstalacoes) {
     for (int i = 0; i < 16; i++) {
-        if (inst.estoques[i] > 0 
-            && time() - inst.tempoUltimoDespacho[i] >= 1.0) {
-            
+        if (inst.estoques[i] > 0 && time() - inst.tempoUltimoDespacho[i] >= 1.0) {
             despacharMaterial(inst, i);
             inst.tempoUltimoDespacho[i] = time();
         }
@@ -1776,10 +1774,9 @@ for (Object[] c : lote.contribuicoes) {
     fpso.distanciaCaminhaoPorMaterial[i] = lote.distanciaKm;
     fpso.tempoCaminhaoPorMaterial[i] = lote.tempoMeses;
 
-    if (fpso.qtdPendente[i] <= 1e-6 && pendenteAntes > 1e-6) {
+    if (fpso.qtdPendente[i] <= 1e-9 && pendenteAntes > 1e-9) {
         fpso.materiaisPendentes--;
         if (fpso.materiaisPendentes == 0) {
-            fpso.tempoSaidaSistema = time();
             aguardarDestinacao.free(fpso);
         }
     }
@@ -1989,13 +1986,12 @@ public double tempoSaidaInstalacao = 0;
 public double tempoTotalSistema = 0;
 public boolean ocorreuFila = false;
 
-//
-public double[] qtdPendente = new double[16];        // toneladas ainda não destinadas
-public int materiaisPendentes = 0;                    // contador (de 16 → 0)
+// DETALHES LOTES
+public double[] qtdPendente = new double[16]; // toneladas ainda não destinadas
+public int materiaisPendentes = 0; // contador (de 16 -> 0)
 public String[] destinadorPorMaterial = new String[16];
 public double[] distanciaCaminhaoPorMaterial = new double[16];
-public double[] tempoCaminhaoPorMaterial = new double[16];
-public double tempoSaidaSistema;                      // momento real do fim]]></AdditionalClassCode>
+public double[] tempoCaminhaoPorMaterial = new double[16];]]></AdditionalClassCode>
 			<Generic>false</Generic>
 			<GenericParameter>
 				<Id>1777188824599</Id>
@@ -2144,12 +2140,12 @@ public String restricaoAcesso = "";
 public double pesoEmProcessamento = 0; // soma do pesoTon das FPSOs em desmantelamento
 
 // ESTOQUES DE MATERIAIS (acumulados aguardando despacho)
-// Array de 16 posições — mesma indexação da Parte 3.0
+// Array de 16 posições
 public double[] estoques = new double[16];
 
 @SuppressWarnings("unchecked")
 public java.util.ArrayDeque<Object[]>[] contribuicoes = new java.util.ArrayDeque[16];
-// Cada entrada: { idFPSO, qtd }  — usar Object[] ou criar uma classe Contribuicao com 2 campos
+// Cada entrada: { idFPSO, qtd }
 
 // CONTROLE DE DESPACHO (regra de 1 mês de espera máxima)
 // Registra o momento do último envio de cada material
@@ -2309,9 +2305,9 @@ public double capMediaTonAno = 0;
 
 
 // VARIÁVEIS DINÂMICAS (mudam durante a simulação)
-public double capAtualAno = 0;          // capacidade sorteada para o ano corrente
-public double volumeRecebidoNoAno = 0;  // toneladas já recebidas no ano corrente
-public double volumeRecebidoNoMes = 0;  // toneladas recebidas no mês corrente (para log)
+public double capAtualAno = 0; // capacidade sorteada para o ano corrente
+public double volumeRecebidoNoAno = 0; // toneladas já recebidas no ano corrente
+public double volumeRecebidoNoMes = 0; // toneladas recebidas no mês corrente (para log)
 public double totalRecebidoHistorico = 0; // acumulado total desde o início
 
 public boolean temCapacidade(double volumeAEnviar) {
@@ -2453,7 +2449,7 @@ public boolean temCapacidade(double volumeAEnviar) {
 			<Id>1777308490140</Id>
 			<Name><![CDATA[Lote]]></Name>
 			<AdditionalClassCode><![CDATA[public Destinador destinador;
-public int materialIdx;            // 0..15
+public int materialIdx; // 0..15
 public double distanciaKm;
 public double tempoMeses;
 public double volumeTotal = 0;
