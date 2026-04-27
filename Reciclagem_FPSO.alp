@@ -1,0 +1,2785 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+*************************************************
+	         AnyLogic Project File
+*************************************************
+-->
+<AnyLogicWorkspace WorkspaceVersion="1.9" AnyLogicVersion="8.9.8.202602271015" AlpVersion="8.9.7">
+<Model>
+	<Id>1777188281253</Id>
+	<Name><![CDATA[Reciclagem_FPSO]]></Name>
+	<EngineVersion>6</EngineVersion>
+	<JavaPackageName><![CDATA[reciclagem_fpso]]></JavaPackageName>
+	<ModelTimeUnit><![CDATA[Month]]></ModelTimeUnit>
+	<Folders>
+	</Folders>
+	<ActiveObjectClasses>
+		<!--   =========   Active Object Class   ========  -->
+		<ActiveObjectClass>
+			<Id>1777188281278</Id>
+			<Name><![CDATA[Main]]></Name>
+			<AdditionalClassCode><![CDATA[public int limiteFPSOsTeste = 3;  // mude para quantas quiser testar
+public int fpsosInjetadas = 0;
+
+public static final String[] NOMES_MATERIAIS = {
+    "Ferroso", "NaoFerroso", "A-1", "A-3&C-25", "C-46",
+    "B-3", "B-4", "C-3", "C-8", "C-9", "C-13", "C-14",
+    "C-15", "C-50", "D-1", "D-2"
+};
+
+public static final double[] CAP_CAMINHAO = {
+    30.0, 10.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0,
+    5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0
+};
+
+public java.util.ArrayList<FPSO> listaFPSOs = new java.util.ArrayList<FPSO>();
+public java.util.ArrayList<Instalacao> listaInstalacoes = new java.util.ArrayList<Instalacao>();
+public java.util.ArrayList<Destinador> listaDestinadores = new java.util.ArrayList<Destinador>();
+public java.util.LinkedList<FPSO> filaPendente = new java.util.LinkedList<FPSO>();
+
+double calcularDistanciaKm(double lat1, double lon1, double lat2, double lon2) {
+    double R = 6371.0; // raio da Terra em km
+    double dLat = Math.toRadians(lat2 - lat1);
+    double dLon = Math.toRadians(lon2 - lon1);
+    double a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+               Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+               Math.sin(dLon/2) * Math.sin(dLon/2);
+    double c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    return R * c;
+}
+
+public Instalacao getInstalacaoPorNome(String nome) {
+    for (Instalacao inst : listaInstalacoes) {
+        if (inst.nome.equals(nome)) return inst;
+    }
+    return null;
+}
+
+public void processarSeparacao(Agent agent, String nomeInstalacao) {
+    FPSO fpso = (FPSO) agent;
+    fpso.tempoSaidaInstalacao = time();
+
+    // Separação de materiais (distribuições triangulares)
+    double[][] pctParams = {
+        {0.869,     0.977,     0.923},      // 0: Ferroso
+        {0.01,      0.11,      0.06},       // 1: NãoFerroso
+        {0.0012892, 0.0043833, 0.0028362},  // 2: A-1
+        {0.0000150, 0.0000510, 0.0000330},  // 3: A-3&C-25
+        {0.0000812, 0.0002762, 0.0001787},  // 4: C-46
+        {0.0000016, 0.0000054, 0.0000035},  // 5: B-3
+        {0.0000015, 0.0000052, 0.0000034},  // 6: B-4
+        {0.0012717, 0.0043236, 0.0027977},  // 7: C-3
+        {0.0000099, 0.0000338, 0.0000219},  // 8: C-8
+        {0.0008548, 0.0029062, 0.0018805},  // 9: C-9
+        {0.0000150, 0.0000510, 0.0000330},  // 10: C-13
+        {0.0000081, 0.0000276, 0.0000178},  // 11: C-14
+        {0.0000150, 0.0000510, 0.0000330},  // 12: C-15
+        {0.0063412, 0.0215600, 0.0139506},  // 13: C-50
+        {0.0000853, 0.0002899, 0.0001876},  // 14: D-1
+        {0.0000106, 0.0000359, 0.0000232}   // 15: D-2
+    };
+
+    for (int i = 0; i < 16; i++) {
+        double pct = triangular(pctParams[i][0], pctParams[i][1], pctParams[i][2]);
+        fpso.qtdMateriais[i] = pct * fpso.pesoTon;
+    }
+
+    // Acumular nos estoques da instalação
+    Instalacao inst = getInstalacaoPorNome(nomeInstalacao);
+    for (int i = 0; i < 16; i++) {
+	    inst.estoques[i] += fpso.qtdMateriais[i];
+	   
+	    if (fpso.qtdMateriais[i] > 0) {
+	        inst.contribuicoes[i].addLast(new Object[]{ fpso, fpso.qtdMateriais[i] });
+	        fpso.qtdPendente[i] = fpso.qtdMateriais[i];
+	        fpso.materiaisPendentes++;
+	    }
+	}
+    
+    double somaTotal = 0;
+    for (int i = 0; i < 16; i++) somaTotal += fpso.qtdMateriais[i];
+    
+    traceln("=== SEPARAÇÃO === Mês " + String.format("%.2f", time()) 
+        + " | FPSO: " + fpso.sigla 
+        + " | Instalação: " + nomeInstalacao
+        + " | Ferroso: " + String.format("%.1f", fpso.qtdMateriais[0]) + "t"
+        + " | NãoFerroso: " + String.format("%.1f", fpso.qtdMateriais[1]) + "t"
+        + " | Total materiais: " + String.format("%.1f", somaTotal) + "t"
+        + " | Peso original: " + String.format("%.1f", fpso.pesoTon) + "t");
+}
+
+public void despacharMaterial(Instalacao inst, int i) {
+    String tipoMaterialBusca = NOMES_MATERIAIS[i];
+
+    // Enviar caminhões enquanto houver material suficiente
+    while (inst.estoques[i] > 1e-9) {
+        double volumeAEnviar = Math.min(inst.estoques[i], CAP_CAMINHAO[i]);
+
+        // Buscar destinador compatível mais próximo com capacidade
+        Destinador selecionado = null;
+        double menorDist = Double.MAX_VALUE;
+
+        for (Destinador dest : listaDestinadores) {
+            if (dest.tipoMaterial.equals(tipoMaterialBusca) 
+                && dest.temCapacidade(volumeAEnviar)) {
+                double dist = calcularDistanciaKm(inst.latitude, inst.longitude, 
+                                                   dest.latitude, dest.longitude);
+                if (dist < menorDist) {
+                    menorDist = dist;
+                    selecionado = dest;
+                }
+            }
+        }
+
+        // Se nenhum destinador tem capacidade, parar
+        if (selecionado == null){
+        	//traceln("=== DESPACHO BLOQUEADO === Mês " + String.format("%.2f", time())
+           //     + " | Instalação: " + inst.nome
+            //    + " | Material: " + tipoMaterialBusca
+             //   + " | Estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
+             //   + " | Motivo: nenhum destinador com capacidade");
+        	break;
+        }
+        
+        Lote lote = new Lote();
+        lote.destinador  = selecionado;
+        lote.materialIdx = i;
+        lote.distanciaKm = menorDist;
+        lote.volumeTotal = volumeAEnviar;
+
+        // Calcular tempo de transporte
+        double velKmH = triangular(50, 70, 60);
+        double tempoHoras = menorDist / velKmH;
+        double tempoMeses = tempoHoras / (24.0 * 30.0);
+		
+		lote.tempoMeses = tempoMeses;
+		
+        double restante = volumeAEnviar;
+        while (restante > 1e-9 && !inst.contribuicoes[i].isEmpty()) {
+            Object[] c = inst.contribuicoes[i].peekFirst();
+            FPSO contribuinte = (FPSO) c[0];
+            double q = (double) c[1];
+
+            if (q <= restante + 1e-9) {
+                // Toda a contribuição entra no caminhão
+                inst.contribuicoes[i].pollFirst();
+                lote.contribuicoes.add(new Object[]{ contribuinte, q });
+                restante -= q;
+            } else {
+                // Despacho parcial: parte vai, parte fica para o próximo caminhão
+                c[1] = q - restante;
+                lote.contribuicoes.add(new Object[]{ contribuinte, restante });
+                restante = 0;
+            }
+        }
+        
+        // Atualizar estoques e contadores
+        inst.estoques[i] -= volumeAEnviar;
+        selecionado.volumeRecebidoNoAno += volumeAEnviar;
+        selecionado.volumeRecebidoNoMes += volumeAEnviar;
+        selecionado.totalRecebidoHistorico += volumeAEnviar;
+    	
+    	enterLote.take(lote);
+    	
+    	//traceln("=== DESPACHO === Mês " + String.format("%.2f", time())
+         //   + " | Instalação: " + inst.nome
+         //   + " | Material: " + tipoMaterialBusca
+         //   + " | Volume: " + String.format("%.2f", volumeAEnviar) + "t"
+         //   + " | Destinador: " + selecionado.razaoSocial
+         //   + " | Distância: " + String.format("%.1f", menorDist) + " km"
+         //   + " | Tempo transporte: " + String.format("%.4f", tempoMeses) + " meses"
+          //  + " | Restante estoque: " + String.format("%.2f", inst.estoques[i]) + "t"
+          //  + " | Destinador utilização: " + String.format("%.2f", selecionado.volumeRecebidoNoAno) 
+          //  + "/" + String.format("%.2f", selecionado.capAtualAno) + " t/ano");
+    }
+}
+
+public double[] geocodificarMunicipio(String municipio) {
+    String m = municipio.toUpperCase().trim();
+    
+    if (m.equals("CAIEIRAS"))            return new double[]{-23.36, -46.74};
+    if (m.equals("SAO JOSE DOS CAMPOS")) return new double[]{-23.18, -45.88};
+    if (m.equals("SERRA"))               return new double[]{-20.13, -40.31};
+    if (m.equals("UBERABA"))             return new double[]{-19.75, -47.93};
+    if (m.equals("ROSARIO"))             return new double[]{-2.94,  -44.25};
+    if (m.equals("CARIACICA"))           return new double[]{-20.26, -40.42};
+    if (m.equals("VALINHOS"))            return new double[]{-22.97, -46.99};
+    if (m.equals("SAO JOAO DEL REI"))    return new double[]{-21.13, -44.26};
+    if (m.equals("JOAO PESSOA"))         return new double[]{-7.12,  -34.84};
+    if (m.equals("INDAIATUBA"))          return new double[]{-23.09, -47.22};
+    if (m.equals("GRAVATAI"))            return new double[]{-29.94, -50.99};
+    if (m.equals("GUARULHOS"))           return new double[]{-23.45, -46.53};
+    if (m.equals("ITAMBE"))              return new double[]{-23.66, -51.99};
+    if (m.equals("LONDRINA"))            return new double[]{-23.31, -51.16};
+    if (m.equals("CURITIBA"))            return new double[]{-25.43, -49.27};
+    if (m.equals("BALSA NOVA"))          return new double[]{-25.58, -49.63};
+    if (m.equals("RIO CLARO"))           return new double[]{-22.41, -47.56};
+    if (m.equals("ITU"))                 return new double[]{-23.26, -47.30};
+    if (m.equals("ALVORADA"))            return new double[]{-29.99, -51.08};
+    if (m.equals("LAVRAS"))              return new double[]{-21.25, -45.00};
+    if (m.equals("MACAE"))               return new double[]{-22.37, -41.79};
+    if (m.equals("TAMARANA"))            return new double[]{-23.72, -51.10};
+    if (m.equals("SUZANO"))              return new double[]{-23.54, -46.31};
+    if (m.equals("MAGE"))                return new double[]{-22.65, -43.17};
+    if (m.equals("ARACRUZ"))             return new double[]{-19.82, -40.27};
+    if (m.equals("MAUA"))                return new double[]{-23.67, -46.46};
+    if (m.equals("TRES LAGOAS"))         return new double[]{-20.75, -51.68};
+    if (m.equals("AMERICANA"))           return new double[]{-22.74, -47.33};
+    if (m.equals("CAPELA DE SANTANA"))   return new double[]{-29.70, -51.33};
+    if (m.equals("PEDRO LEOPOLDO"))      return new double[]{-19.62, -44.04};
+    if (m.equals("SAO JOSE DOS PINHAIS"))return new double[]{-25.53, -49.21};
+    if (m.equals("SETE LAGOAS"))         return new double[]{-19.46, -44.25};
+    if (m.equals("SOROCABA"))            return new double[]{-23.50, -47.46};
+    
+    traceln("AVISO: Município não geocodificado: " + municipio);
+    return new double[]{0.0, 0.0};
+}
+
+public boolean liberandoEmAndamento = false;
+public void tentarLiberar() {
+    if (liberandoEmAndamento) return;
+    liberandoEmAndamento = true;
+    
+    // Despachar tudo uma vez por instalação, antes de avaliar a fila
+    java.util.HashSet<String> instalacoesNaFila = new java.util.HashSet<>();
+    for (int idx = 0; idx < filaAtracacao.size(); idx++) {
+        FPSO fp = (FPSO) filaAtracacao.get(idx);
+        instalacoesNaFila.add(fp.idInstalacaoSelecionada);
+    }
+    for (String nomeInst : instalacoesNaFila) {
+        Instalacao inst = getInstalacaoPorNome(nomeInst);
+        for (int i = 0; i < 16; i++) despacharMaterial(inst, i); // Despache
+    }
+    
+    // FPSOs que serão liberadas
+    java.util.ArrayList<FPSO> paraLiberar = new java.util.ArrayList<>();
+    // Contagem temporária de alocações planejadas por instalação
+    java.util.HashMap<String, Integer> contAlocacoesPlanejadas = new java.util.HashMap<>();
+    // Peso das alocações planejadas por instalação
+    java.util.HashMap<String, Double> pesoAlocacoesPlanejadas = new java.util.HashMap<>();
+    
+    
+    for (int idx = 0; idx < filaAtracacao.size(); idx++) {
+        FPSO fpso = (FPSO) filaAtracacao.get(idx);
+        Instalacao inst = getInstalacaoPorNome(fpso.idInstalacaoSelecionada);
+        
+        int jaAlocadas = contAlocacoesPlanejadas.getOrDefault(inst.nome, 0);
+        
+        // Estrutura livre (considerando as já planejadas)
+        if (inst.numFPSOsEmProcessamento + jaAlocadas >= inst.numEstruturas) {
+            traceln("=== BLOQUEADA POR ESTRUTURA === Mês " + String.format("%.2f", time())
+                + " | FPSO: " + fpso.sigla
+                + " | Instalação: " + inst.nome
+                + " | Em processamento: " + inst.numFPSOsEmProcessamento
+                + " | Já planejadas neste loop: " + jaAlocadas
+                + " | Estruturas totais: " + inst.numEstruturas);
+            continue;
+        }
+        
+        // Capacidade de armazenamento
+        double estoqueTotal = 0;
+        for (int i = 0; i < 16; i++) estoqueTotal += inst.estoques[i];
+        
+        // pesoPlanejado = soma dos pesos das FPSOs já marcadas para liberação nesta passada
+		double pesoPlanejado = pesoAlocacoesPlanejadas.getOrDefault(inst.nome, 0.0);
+        double ocupacao = estoqueTotal + inst.pesoEmProcessamento + pesoPlanejado;
+        
+        if (ocupacao + fpso.pesoTon > inst.capArmazenamentoAnual) {
+            traceln("=== BLOQUEADA POR ARMAZENAMENTO === Mês " + String.format("%.2f", time())
+                + " | FPSO: " + fpso.sigla + " (" + String.format("%.0f", fpso.pesoTon) + "t)"
+                + " | Instalação: " + inst.nome
+                + " | Estoque: " + String.format("%.0f", estoqueTotal) + "t"
+                + " | Em processamento: " + String.format("%.0f", inst.pesoEmProcessamento) + "t"
+                + " | Planejado neste loop: " + String.format("%.0f", pesoPlanejado) + "t"
+                + " | Ocupação total + nova FPSO: " + String.format("%.0f", ocupacao + fpso.pesoTon) + "t"
+                + " | Capacidade: " + String.format("%.0f", inst.capArmazenamentoAnual) + "t"
+                + " | Faltam: " + String.format("%.0f", (ocupacao + fpso.pesoTon) - inst.capArmazenamentoAnual) + "t");
+            continue;
+        }
+        
+        paraLiberar.add(fpso);
+        contAlocacoesPlanejadas.put(inst.nome, jaAlocadas + 1);
+        pesoAlocacoesPlanejadas.put(inst.nome, pesoPlanejado + fpso.pesoTon);
+    }
+    
+    // Liberar fora do loop de decisão
+    for (FPSO fpso : paraLiberar) {
+        traceln("=== LIBERADA DA FILA === Mês " + String.format("%.2f", time())
+            + " | FPSO: " + fpso.sigla
+            + " | Instalação: " + fpso.idInstalacaoSelecionada);
+        
+        filaAtracacao.free(fpso);
+    }
+    
+    liberandoEmAndamento = false;
+}]]></AdditionalClassCode>
+			<StartupCode><![CDATA[for (int i = 0; i < 57; i++) {
+    FPSO fpso = new FPSO();
+    fpso.sigla = excelData.getCellStringValue("FPSOs", i + 2, 1);  // linha i+2, coluna A
+    fpso.nome = excelData.getCellStringValue("FPSOs", i + 2, 2);
+    String bacia = excelData.getCellStringValue("FPSOs", i + 2, 3);
+    fpso.bacia = (bacia != null) ? bacia : "";
+    fpso.anoDescomissionamento = (int) excelData.getCellNumericValue("FPSOs", i + 2, 4);
+    fpso.latitude = excelData.getCellNumericValue("FPSOs", i + 2, 5);
+    fpso.longitude = excelData.getCellNumericValue("FPSOs", i + 2, 6);
+    fpso.pesoTon = excelData.getCellNumericValue("FPSOs", i + 2, 7);
+    listaFPSOs.add(fpso);
+}
+
+String[] nomesInstalacoes = {"Atlântico Sul (EAS)", "Ecovix", "EISA", 
+    "Enseada", "Inhaúma", "Mauá", "Mac Laren", "Porto do Açu"};
+
+for (int col = 2; col <= 9; col++) {
+    Instalacao inst = new Instalacao();
+    
+    for (int i = 0; i < 16; i++) {
+        inst.contribuicoes[i] = new java.util.ArrayDeque<>();
+    }
+    
+    inst.nome = nomesInstalacoes[col - 2];
+    inst.estado = excelData.getCellStringValue("Instalações de reciclagem", 2, col);
+    
+    String latlon = excelData.getCellStringValue("Instalações de reciclagem", 3, col);
+    String[] partes = latlon.split(",");
+    inst.latitude = Double.parseDouble(partes[0].trim());
+    inst.longitude = Double.parseDouble(partes[1].trim());
+    
+    inst.numEstruturas = (int) excelData.getCellNumericValue("Instalações de reciclagem", 4, col);
+    inst.capArmazenamentoAnual = excelData.getCellNumericValue("Instalações de reciclagem", 5, col);
+    inst.restricaoAcesso = excelData.getCellStringValue("Instalações de reciclagem", 6, col);
+    
+    listaInstalacoes.add(inst);
+}
+
+for (int i = 0; i < 28; i++) {
+    Destinador dest = new Destinador();
+    dest.tipoMaterial = "Ferroso";
+    dest.razaoSocial = excelData.getCellStringValue("Destino-Ferroso", i + 2, 2);
+    dest.estado = excelData.getCellStringValue("Destino-Ferroso", i + 2, 3);
+    dest.latitude = excelData.getCellNumericValue("Destino-Ferroso", i + 2, 4);
+    dest.longitude = excelData.getCellNumericValue("Destino-Ferroso", i + 2, 5);
+    
+    dest.capMinTonAno = excelData.getCellNumericValue("Destino-Ferroso", i + 2, 6);
+    dest.capMaxTonAno = dest.capMinTonAno;
+    dest.capMediaTonAno = dest.capMinTonAno;
+    dest.capAtualAno = dest.capMinTonAno;
+    listaDestinadores.add(dest);
+}
+
+int linhaFinal = 38;
+for (int i = 0; i < linhaFinal; i++) {
+    String material = excelData.getCellStringValue("Destinadores", i + 2, 1);
+    if (material == null || material.isEmpty()) break;  // parar se linha vazia
+    
+    Destinador dest = new Destinador();
+    if (material.equals("NãoFerroso")) dest.tipoMaterial = "NaoFerroso";
+    else dest.tipoMaterial = material;
+    
+    dest.cnpj = excelData.getCellStringValue("Destinadores", i + 2, 2);
+    dest.razaoSocial = excelData.getCellStringValue("Destinadores", i + 2, 3);
+    dest.estado = excelData.getCellStringValue("Destinadores", i + 2, 4);
+    dest.municipio = excelData.getCellStringValue("Destinadores", i + 2, 5);
+    dest.participacaoMercado = excelData.getCellNumericValue("Destinadores", i + 2, 6);
+    
+    dest.capMinTonAno = excelData.getCellNumericValue("Destinadores", i + 2, 7) / 1000.0;
+    dest.capMaxTonAno = excelData.getCellNumericValue("Destinadores", i + 2, 8) / 1000.0;
+    dest.capMediaTonAno = excelData.getCellNumericValue("Destinadores", i + 2, 9) / 1000.0;
+    
+    // Geocodificar lat/lon pelo município
+    double[] coords = geocodificarMunicipio(dest.municipio);
+    dest.latitude = coords[0];
+    dest.longitude = coords[1];
+    
+    listaDestinadores.add(dest);
+}]]></StartupCode>
+			<Generic>false</Generic>
+			<GenericParameter>
+				<Id>1777188281283</Id>
+				<Name><![CDATA[1777188281283]]></Name>
+				<GenericParameterValue Class="CodeValue">
+					<Code><![CDATA[T extends Agent]]></Code>
+				</GenericParameterValue>
+				<GenericParameterLabel><![CDATA[Generic parameter:]]></GenericParameterLabel>
+			</GenericParameter>
+			<FlowChartsUsage>ENTITY</FlowChartsUsage>
+			<SamplesToKeep>100</SamplesToKeep>
+			<LimitNumberOfArrayElements>false</LimitNumberOfArrayElements>
+			<ElementsLimitValue>100</ElementsLimitValue>
+			<MakeDefaultViewArea>true</MakeDefaultViewArea>
+			<SceneGridColor/>
+			<SceneBackgroundColor>-4144960</SceneBackgroundColor>
+			<SceneSkybox>null</SceneSkybox>
+			<AgentProperties>
+				<EnvironmentDefinesInitialLocation>true</EnvironmentDefinesInitialLocation>
+				<RotateAnimationTowardsMovement>true</RotateAnimationTowardsMovement>
+				<RotateAnimationVertically>false</RotateAnimationVertically>
+				<VelocityCode Class="CodeUnitValue">
+					<Code><![CDATA[10]]></Code>
+					<Unit Class="SpeedUnits"><![CDATA[MPS]]></Unit>
+				</VelocityCode>
+				<PhysicalLength Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalLength>
+				<PhysicalWidth Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalWidth>
+				<PhysicalHeight Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalHeight>
+			</AgentProperties>
+			<EnvironmentProperties>
+					<EnableSteps>false</EnableSteps>
+					<StepDurationCode Class="CodeUnitValue">
+						<Code><![CDATA[1.0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+					</StepDurationCode>
+					<SpaceType>CONTINUOUS</SpaceType>
+					<WidthCode><![CDATA[500]]></WidthCode>
+					<HeightCode><![CDATA[500]]></HeightCode>
+					<ZHeightCode><![CDATA[0]]></ZHeightCode>
+					<ColumnsCountCode><![CDATA[100]]></ColumnsCountCode>
+					<RowsCountCode><![CDATA[100]]></RowsCountCode>
+					<NeigborhoodType>MOORE</NeigborhoodType>
+					<LayoutType>USER_DEF</LayoutType>
+					<NetworkType>USER_DEF</NetworkType>
+					<ConnectionsPerAgentCode><![CDATA[2]]></ConnectionsPerAgentCode>
+					<ConnectionsRangeCode><![CDATA[50]]></ConnectionsRangeCode>
+					<NeighborLinkFractionCode><![CDATA[0.95]]></NeighborLinkFractionCode>
+					<MCode><![CDATA[10]]></MCode>
+			</EnvironmentProperties>
+			<DatasetsCreationProperties>
+				<AutoCreate>true</AutoCreate>
+					<Id>1777188281277</Id>
+					<OccurrenceAtTime>true</OccurrenceAtTime>
+					<OccurrenceDate>1777190400000</OccurrenceDate>
+					<OccurrenceTime Class="CodeUnitValue">
+						<Code><![CDATA[0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</OccurrenceTime>
+					<RecurrenceCode Class="CodeUnitValue">
+						<Code><![CDATA[1]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</RecurrenceCode>
+			</DatasetsCreationProperties>
+			<ScaleRuler>
+				<Id>1777188281281</Id>
+				<Name><![CDATA[scale]]></Name>
+				<X>0</X><Y>-150</Y>
+				<PublicFlag>false</PublicFlag>
+				<PresentationFlag>false</PresentationFlag>
+				<ShowLabel>false</ShowLabel>
+				<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+				<Length>100</Length>
+				<Rotation>0</Rotation>
+				<ScaleType>BASED_ON_LENGTH</ScaleType>
+				<ModelLength>10</ModelLength>
+				<LengthUnits>METER</LengthUnits>
+				<Scale>10</Scale>
+				<InheritedFromParentAgentType>true</InheritedFromParentAgentType>
+			</ScaleRuler>
+			<CurrentLevel>1777188281284</CurrentLevel>
+			<ConnectionsId>1777188281279</ConnectionsId>
+			<Connectors>
+				<Connector>
+					<Id>1777271880232</Id>
+					<Name><![CDATA[connector1]]></Name>
+					<X>380</X><Y>780</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[desmantelamento]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[filaAtracacao]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-80</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777271880234</Id>
+					<Name><![CDATA[connector2]]></Name>
+					<X>260</X><Y>780</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[filaAtracacao]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[reboque]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-60</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777302252711</Id>
+					<Name><![CDATA[connector3]]></Name>
+					<X>160</X><Y>780</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[reboque]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[source]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Source]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-60</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777308572284</Id>
+					<Name><![CDATA[connector5]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[transporteCaminhao]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[enterLote]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Enter]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>300</X><Y>890</Y></Point>
+						<Point><X>240</X><Y>890</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777308605442</Id>
+					<Name><![CDATA[connector6]]></Name>
+					<X>470</X><Y>890</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[destinador]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Sink]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[transporteCaminhao]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-130</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777309412750</Id>
+					<Name><![CDATA[connector]]></Name>
+					<X>680</X><Y>780</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[sink]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Sink]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[aguardarDestinacao]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-120</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+				<Connector>
+					<Id>1777309412752</Id>
+					<Name><![CDATA[connector4]]></Name>
+					<X>520</X><Y>780</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<SourceEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[aguardarDestinacao]]></ItemName>
+					</SourceEmbeddedObjectReference>
+					<SourceConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+						<ItemName><![CDATA[in]]></ItemName>
+					</SourceConnectableItemReference>
+					<TargetEmbeddedObjectReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[Main]]></ClassName>
+						<ItemName><![CDATA[desmantelamento]]></ItemName>
+					</TargetEmbeddedObjectReference>
+					<TargetConnectableItemReference>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+						<ItemName><![CDATA[out]]></ItemName>
+					</TargetConnectableItemReference>
+					<Points>
+						<Point><X>0</X><Y>0</Y></Point>
+						<Point><X>-100</X><Y>0</Y></Point>
+					</Points>
+				</Connector>
+			</Connectors>
+			<Events>
+				<Event>
+					<Id>1777235949053</Id>
+					<Name><![CDATA[eventAnual]]></Name>
+					<X>290</X><Y>510</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties TriggerType="timeout" Mode="cyclic">
+						<Timeout Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</Timeout>
+						<Rate Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="RateUnits"><![CDATA[PER_MONTH]]></Unit>
+						</Rate>
+						<Id>1777235949051</Id>
+						<OccurrenceAtTime>true</OccurrenceAtTime>
+						<OccurrenceDate>1777276800000</OccurrenceDate>
+						<OccurrenceTime Class="CodeUnitValue">
+							<Code><![CDATA[0]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</OccurrenceTime>
+						<RecurrenceCode Class="CodeUnitValue">
+							<Code><![CDATA[12]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</RecurrenceCode>
+						<Condition><![CDATA[false]]></Condition>
+					</Properties>
+					<Action><![CDATA[// Atualizar capacidades dos destinadores
+for (Destinador dest : listaDestinadores) {
+    if (dest.tipoMaterial.equals("Ferroso")) {
+        // Siderúrgicas: capacidade fixa
+        dest.capAtualAno = dest.capMinTonAno;
+    } else {
+        // Demais: distribuição triangular
+        dest.capAtualAno = triangular(dest.capMinTonAno, dest.capMaxTonAno, dest.capMediaTonAno);
+    }
+    dest.volumeRecebidoNoAno = 0;
+    dest.volumeRecebidoNoMes = 0;
+}
+
+// Injetar FPSOs do ano corrente
+int anoAtual = 2026 + (int)(time() / 12);
+
+for (FPSO fpso : listaFPSOs) {
+    if (fpsosInjetadas >= limiteFPSOsTeste) break;
+
+    if (fpso.anoDescomissionamento == anoAtual) {
+        filaPendente.add(fpso);   // guardar os dados na fila
+        source.inject(1);         // criar 1 agente vazio do tipo FPSO
+        fpsosInjetadas++;
+    }
+}]]></Action>
+				</Event>
+				<Event>
+					<Id>1777241541800</Id>
+					<Name><![CDATA[eventDespacho]]></Name>
+					<X>490</X><Y>510</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<Properties TriggerType="timeout" Mode="cyclic">
+						<Timeout Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</Timeout>
+						<Rate Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="RateUnits"><![CDATA[PER_MONTH]]></Unit>
+						</Rate>
+						<Id>1777241541798</Id>
+						<OccurrenceAtTime>true</OccurrenceAtTime>
+						<OccurrenceDate>1777276800000</OccurrenceDate>
+						<OccurrenceTime Class="CodeUnitValue">
+							<Code><![CDATA[0]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</OccurrenceTime>
+						<RecurrenceCode Class="CodeUnitValue">
+							<Code><![CDATA[1]]></Code>
+							<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+						</RecurrenceCode>
+						<Condition><![CDATA[false]]></Condition>
+					</Properties>
+					<Action><![CDATA[// Resetar volume dos destinadores para log
+for (Destinador dest : listaDestinadores) {
+    dest.volumeRecebidoNoMes = 0;
+}
+
+// Checar se precisa despachar algum material depois de um mes
+for (Instalacao inst : listaInstalacoes) {
+    for (int i = 0; i < 16; i++) {
+        if (inst.estoques[i] > 0 
+            && time() - inst.tempoUltimoDespacho[i] >= 1.0) {
+            
+            despacharMaterial(inst, i);
+            inst.tempoUltimoDespacho[i] = time();
+        }
+    }
+}
+tentarLiberar();]]></Action>
+				</Event>
+			</Events>
+			<Connectivity>
+				<ExcelFile>
+					<Id>1777188367199</Id>
+					<Name><![CDATA[excelData]]></Name>
+					<X>280</X><Y>440</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ResourceReference>
+						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+						<ClassName><![CDATA[C:/Users/tiago/Downloads/Dados-NOTAÇÃO AMERICANA.xlsx]]></ClassName>
+					</ResourceReference>
+					<SaveInSnapshot>false</SaveInSnapshot>
+					<LoadOnStartup>true</LoadOnStartup>
+					<SaveOnDispose>true</SaveOnDispose>
+				</ExcelFile>
+			</Connectivity>
+			<AgentLinks>
+				<AgentLink>
+					<Id>1777188281279</Id>
+					<Name><![CDATA[connections]]></Name>
+					<X>50</X><Y>-50</Y>
+					<Label><X>15</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<HandleReceiveInConnections>false</HandleReceiveInConnections>
+					<AgentLinkType>COLLECTION_OF_LINKS</AgentLinkType>
+					<AgentLinkBidirectional>true</AgentLinkBidirectional>
+					<MessageType><![CDATA[Object]]></MessageType>
+					<LineStyle>SOLID</LineStyle>
+					<LineWidth>1</LineWidth>
+					<LineColor>-16777216</LineColor>
+					<LineZOrder>UNDER_AGENTS</LineZOrder>
+					<LineArrow>NONE</LineArrow>
+					<LineArrowPosition>END</LineArrowPosition>
+				</AgentLink>
+			</AgentLinks>
+
+			<EmbeddedObjects>
+				<EmbeddedObject>
+					<Id>1777235743645</Id>
+					<Name><![CDATA[source]]></Name>
+					<X>70</X><Y>770</Y>
+					<Label><X>-5</X><Y>-25</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Source]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Source]]></ClassName>
+							<ItemName><![CDATA[1412336242928]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[arrivalType]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[self.MANUAL]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[rate]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[interarrivalTime]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[firstArrivalMode]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[firstArrivalTime]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[rateSchedule]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[modifyRate]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[rateExpression]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[arrivalSchedule]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[setAgentParametersFromDB]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[databaseTable]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[arrivalDate]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[multipleEntitiesPerArrival]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entitiesPerArrival]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[limitArrivals]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maxArrivals]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationType]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationX]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationY]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationZ]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLatitude]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLongitude]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationGeoPlaceName]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationXYZInNetwork]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationNetwork]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLevel]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationNode]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationAttractor]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[speed]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[newEntity]]></Name>
+							<Value Class="EntityCodeValue">
+								<IsAgentEntity>true</IsAgentEntity>
+								<EntityEmbeddedObject>
+									<Id>1777235744996</Id>
+									<ActiveObjectClass>
+										<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+										<ClassName><![CDATA[FPSO]]></ClassName>
+									</ActiveObjectClass>
+									<GenericParameterSubstitute>
+										<GenericParameterSubstituteReference>
+											<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
+											<ClassName><![CDATA[FPSO]]></ClassName>
+											<ItemName><![CDATA[1777188824599]]></ItemName>
+										</GenericParameterSubstituteReference>
+									</GenericParameterSubstitute>
+									<Parameters>
+									</Parameters>
+									<ReplicationFlag>true</ReplicationFlag>
+									<Replication Class="CodeValue">
+										<Code><![CDATA[100]]></Code>
+									</Replication>
+									<CollectionType>ARRAY_LIST_BASED</CollectionType>
+									<InitialLocationType>XYZ</InitialLocationType>
+									<ColumnCode Class="CodeValue">
+										<Code><![CDATA[0]]></Code>
+									</ColumnCode>
+									<RowCode Class="CodeValue">
+										<Code><![CDATA[0]]></Code>
+									</RowCode>
+									<LocationNameCode Class="CodeValue">
+										<Code><![CDATA[""]]></Code>
+									</LocationNameCode>
+									<InitializationType>LOAD_FROM_DATABASE</InitializationType>
+									<InitializationDatabaseTableQuery>
+										<Id>1777235744997</Id>
+										<TableReference>
+										</TableReference>
+									</InitializationDatabaseTableQuery>
+									<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+									<QuantityColumn>
+									</QuantityColumn>
+								</EntityEmbeddedObject>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[changeDimensions]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[length]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[width]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[height]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[enableCustomStartTime]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[startTime]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[addToCustomPopulation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[population]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[discardHangingEntities]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onBeforeArrival]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onAtExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO original = filaPendente.poll();  // pega e remove o primeiro da fila
+FPSO fpso = (FPSO) agent;
+
+fpso.sigla = original.sigla;
+fpso.nome = original.nome;
+fpso.bacia = original.bacia;
+fpso.anoDescomissionamento = original.anoDescomissionamento;
+fpso.latitude = original.latitude;
+fpso.longitude = original.longitude;
+fpso.pesoTon = original.pesoTon;
+
+// Selecionar instalação mais próxima (Cenário Base)
+double menorDist = Double.MAX_VALUE;
+Instalacao selecionada = null;
+
+for (Instalacao inst : listaInstalacoes) {
+    if (inst.capArmazenamentoAnual < fpso.pesoTon) continue;
+    
+    double dist = calcularDistanciaKm(fpso.latitude, fpso.longitude,
+                                       inst.latitude, inst.longitude);
+    if (dist < menorDist) {
+        menorDist = dist;
+        selecionada = inst;
+    }
+}
+
+fpso.idInstalacaoSelecionada = selecionada.nome;
+fpso.distanciaReboque = menorDist;
+
+// Calcular tempo de reboque
+double velocidadeNos = triangular(3, 5, 4);
+double velocidadeKmH = velocidadeNos * 1.852;
+fpso.tempoReboque = menorDist / velocidadeKmH / (24.0 * 30.0);
+
+traceln("=== SOURCE === Mês " + time() 
+    + " | FPSO: " + fpso.sigla 
+    + " | Peso: " + String.format("%.0f", fpso.pesoTon) + "t"
+    + " | Destino: " + fpso.idInstalacaoSelecionada
+    + " | Distância: " + String.format("%.1f", fpso.distanciaReboque) + " km"
+    + " | Tempo reboque: " + String.format("%.4f", fpso.tempoReboque) + " meses");]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onDiscard]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777235743643</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777236683721</Id>
+					<Name><![CDATA[reboque]]></Name>
+					<X>160</X><Y>760</Y>
+					<Label><X>-5</X><Y>-15</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Delay]]></ClassName>
+							<ItemName><![CDATA[1412336242930]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[type]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[delayTime]]></Name>
+							<Value Class="CodeUnitValue">
+								<Code><![CDATA[((FPSO) agent).tempoReboque]]></Code>
+								<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[capacity]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[100]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maximumCapacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entityLocation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[restoreEntityLocationOnExit]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[false]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[forceStatisticsCollection]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+traceln("=== REBOQUE INÍCIO === Mês " + String.format("%.2f", time()) 
+    + " | FPSO: " + fpso.sigla 
+    + " | Rumo a: " + fpso.idInstalacaoSelecionada);]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onAtExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+traceln("=== REBOQUE FIM === Mês " + String.format("%.2f", time()) 
+    + " | FPSO: " + fpso.sigla 
+    + " | Durou: " + String.format("%.4f", fpso.tempoReboque) + " meses"
+    + " | Chegou em: " + fpso.idInstalacaoSelecionada);]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777236683719</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777240551656</Id>
+					<Name><![CDATA[desmantelamento]]></Name>
+					<X>380</X><Y>760</Y>
+					<Label><X>-5</X><Y>-15</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Delay]]></ClassName>
+							<ItemName><![CDATA[1412336242930]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[type]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[delayTime]]></Name>
+							<Value Class="CodeUnitValue">
+								<Code><![CDATA[((FPSO)agent).pesoTon / 4545.0]]></Code>
+								<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[capacity]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[27]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maximumCapacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entityLocation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[restoreEntityLocationOnExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[forceStatisticsCollection]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+fpso.tempoInicioProcessamento = time();
+
+Instalacao inst = getInstalacaoPorNome(fpso.idInstalacaoSelecionada);
+inst.numFPSOsEmFila--;
+inst.numFPSOsEmProcessamento++;
+inst.pesoEmProcessamento += fpso.pesoTon;
+
+if (time() > fpso.tempoChegadaInstalacao) {
+    fpso.ocorreuFila = true;
+}
+
+traceln("=== ATRACAÇÃO === Mês " + String.format("%.2f", time())
+    + " | FPSO: " + fpso.sigla
+    + " | Instalação: " + fpso.idInstalacaoSelecionada
+    + " | Esperou fila: " + fpso.ocorreuFila
+    + " | Tempo na fila: " + String.format("%.2f", time() - fpso.tempoChegadaInstalacao) + " meses"
+    + " | Em processamento: " + inst.numFPSOsEmProcessamento);]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onAtExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+fpso.tempoSaidaInstalacao = time();
+
+Instalacao inst = getInstalacaoPorNome(fpso.idInstalacaoSelecionada);
+inst.numFPSOsEmProcessamento--;
+inst.numFPSOsAtendidos++;
+inst.pesoEmProcessamento -= fpso.pesoTon;
+
+processarSeparacao(agent, fpso.idInstalacaoSelecionada);
+
+traceln("=== FIM DESMANTELAMENTO === Mês " + String.format("%.2f", time())
+    + " | FPSO: " + fpso.sigla
+    + " | Instalação: " + fpso.idInstalacaoSelecionada
+    + " | Tempo processamento: " + String.format("%.2f", time() - fpso.tempoInicioProcessamento) + " meses");]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777240551654</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777241506014</Id>
+					<Name><![CDATA[sink]]></Name>
+					<X>680</X><Y>770</Y>
+					<Label><X>-10</X><Y>-20</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Sink]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Sink]]></ClassName>
+							<ItemName><![CDATA[1412336242929]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+fpso.tempoTotalSistema = time() - (fpso.anoDescomissionamento - 2026) * 12.0;
+traceln("=== SINK === Mês " + String.format("%.2f", time()) 
+    + " | FPSO: " + fpso.sigla 
+    + " | Tempo total no sistema: " + String.format("%.2f", fpso.tempoTotalSistema) + " meses"
+    + " | Ocorreu fila: " + fpso.ocorreuFila);]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[destroyEntity]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777241506012</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777271860542</Id>
+					<Name><![CDATA[filaAtracacao]]></Name>
+					<X>260</X><Y>760</Y>
+					<Label><X>0</X><Y>-15</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Wait]]></ClassName>
+							<ItemName><![CDATA[1412336243169]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[capacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maximumCapacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entityLocation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[enableTimeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[timeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[enablePreemption]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[queuing]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[priority]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[comparisonForPreemption]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[restoreEntityLocationOnExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[forceStatisticsCollection]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+fpso.tempoChegadaInstalacao = time();
+
+Instalacao inst = getInstalacaoPorNome(fpso.idInstalacaoSelecionada);
+inst.numFPSOsEmFila++;
+
+traceln("=== FILA ATRACAÇÃO === Mês " + String.format("%.2f", time())
+    + " | FPSO: " + fpso.sigla
+    + " | Instalação: " + fpso.idInstalacaoSelecionada
+    + " | Na fila: " + inst.numFPSOsEmFila);
+
+tentarLiberar();]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExitTimeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExitPreempted]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777271860540</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777308525088</Id>
+					<Name><![CDATA[enterLote]]></Name>
+					<X>220</X><Y>880</Y>
+					<Label><X>-10</X><Y>-20</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Enter]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Enter]]></ClassName>
+							<ItemName><![CDATA[1412336242933]]></ItemName>
+						</GenericParameterSubstituteReference>
+						<GenericParameterSubstituteValue Class="CodeValue">
+							<Code><![CDATA[Lote]]></Code>
+						</GenericParameterSubstituteValue>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[locationType]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationX]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationY]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationZ]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLatitude]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLongitude]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationGeoPlaceName]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationXYZInNetwork]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationNetwork]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationLevel]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationNode]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[locationAttractor]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[speed]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[changeDimensions]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[length]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[width]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[height]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[addToCustomPopulation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[population]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onAtEnter]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777308525086</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777308570109</Id>
+					<Name><![CDATA[transporteCaminhao]]></Name>
+					<X>300</X><Y>870</Y>
+					<Label><X>-5</X><Y>-15</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Delay]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Delay]]></ClassName>
+							<ItemName><![CDATA[1412336242930]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[type]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[delayTime]]></Name>
+							<Value Class="CodeUnitValue">
+								<Code><![CDATA[((Lote)agent).tempoMeses]]></Code>
+								<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[capacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maximumCapacity]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[true]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entityLocation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[restoreEntityLocationOnExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[forceStatisticsCollection]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onAtExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777308570107</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777308603218</Id>
+					<Name><![CDATA[destinador]]></Name>
+					<X>470</X><Y>880</Y>
+					<Label><X>-10</X><Y>-20</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Sink]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Sink]]></ClassName>
+							<ItemName><![CDATA[1412336242929]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[Lote lote = (Lote) agent;
+int i = lote.materialIdx;
+
+double volumeTotalLote = 0;
+
+for (Object[] c : lote.contribuicoes) {
+    FPSO fpso = (FPSO) c[0];
+    double qtd = (double) c[1];
+    volumeTotalLote += qtd;
+
+    double pendenteAntes = fpso.qtdPendente[i];
+    fpso.qtdPendente[i] -= qtd;
+
+    fpso.destinadorPorMaterial[i] = lote.destinador.razaoSocial;
+    fpso.distanciaCaminhaoPorMaterial[i] = lote.distanciaKm;
+    fpso.tempoCaminhaoPorMaterial[i] = lote.tempoMeses;
+
+    if (fpso.qtdPendente[i] <= 1e-6 && pendenteAntes > 1e-6) {
+        fpso.materiaisPendentes--;
+        if (fpso.materiaisPendentes == 0) {
+            fpso.tempoSaidaSistema = time();
+            aguardarDestinacao.free(fpso);
+        }
+    }
+}]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[destroyEntity]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777308603216</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+				<EmbeddedObject>
+					<Id>1777309410791</Id>
+					<Name><![CDATA[aguardarDestinacao]]></Name>
+					<X>520</X><Y>760</Y>
+					<Label><X>0</X><Y>-15</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<ActiveObjectClass>
+						<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+						<ClassName><![CDATA[Wait]]></ClassName>
+					</ActiveObjectClass>
+					<GenericParameterSubstitute>
+						<GenericParameterSubstituteReference>
+							<PackageName><![CDATA[com.anylogic.libraries.processmodeling]]></PackageName>
+							<ClassName><![CDATA[Wait]]></ClassName>
+							<ItemName><![CDATA[1412336243169]]></ItemName>
+						</GenericParameterSubstituteReference>
+					</GenericParameterSubstitute>
+					<Parameters>
+						<Parameter>
+							<Name><![CDATA[capacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[maximumCapacity]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[entityLocation]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[enableTimeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[timeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[enablePreemption]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[queuing]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[priority]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[comparisonForPreemption]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[pushProtocol]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[restoreEntityLocationOnExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[forceStatisticsCollection]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onEnter]]></Name>
+							<Value Class="CodeValue">
+								<Code><![CDATA[FPSO fpso = (FPSO) agent;
+
+double volumePendente = 0;
+for (int i = 0; i < 16; i++) {
+    if (fpso.qtdPendente[i] > 1e-9) {
+        volumePendente += fpso.qtdPendente[i];
+    }
+}
+
+traceln("=== AGUARDANDO DESTINAÇÃO === Mês " + String.format("%.2f", time())
+    + " | FPSO: " + fpso.sigla
+    + " | Instalação: " + fpso.idInstalacaoSelecionada
+    + " | Materiais pendentes: " + fpso.materiaisPendentes + "/16"
+    + " | Volume pendente: " + String.format("%.1f", volumePendente) + "t");
+    
+Instalacao inst = getInstalacaoPorNome(fpso.idInstalacaoSelecionada);
+for (int i = 0; i < 16; i++) {
+    // Se o estoque era 0 antes e agora tem material, "iniciar o relógio"
+    if (inst.estoques[i] > 0 && inst.tempoUltimoDespacho[i] == 0) {
+        inst.tempoUltimoDespacho[i] = time();
+    }
+    if (inst.estoques[i] >= CAP_CAMINHAO[i]) {
+        despacharMaterial(inst, i);
+        inst.tempoUltimoDespacho[i] = time();
+    }
+}
+
+tentarLiberar();]]></Code>
+							</Value>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExit]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExitTimeout]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onExitPreempted]]></Name>
+						</Parameter>
+						<Parameter>
+							<Name><![CDATA[onRemove]]></Name>
+						</Parameter>
+					</Parameters>
+					<ReplicationFlag>false</ReplicationFlag>
+					<Replication Class="CodeValue">
+						<Code><![CDATA[100]]></Code>
+					</Replication>
+					<CollectionType>ARRAY_LIST_BASED</CollectionType>
+					<InitialLocationType>XYZ</InitialLocationType>
+					<ColumnCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</ColumnCode>
+					<RowCode Class="CodeValue">
+						<Code><![CDATA[0]]></Code>
+					</RowCode>
+					<LocationNameCode Class="CodeValue">
+						<Code><![CDATA[""]]></Code>
+					</LocationNameCode>
+					<InitializationType>SPECIFIED_NUMBER</InitializationType>
+					<InitializationDatabaseTableQuery>
+						<Id>1777309410789</Id>
+						<TableReference>
+						</TableReference>
+					</InitializationDatabaseTableQuery>
+					<InitializationDatabaseType>ONE_AGENT_PER_DATABASE_RECORD</InitializationDatabaseType>
+					<QuantityColumn>
+					</QuantityColumn>
+				</EmbeddedObject>
+			</EmbeddedObjects>
+
+			<Presentation>
+				<Level>
+					<Id>1777188281284</Id>
+					<Name><![CDATA[level]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<Z>0</Z>
+					<LevelVisibility>DIM_NON_CURRENT</LevelVisibility>
+
+
+				</Level>
+			</Presentation>
+
+		</ActiveObjectClass>
+		<!--   =========   Active Object Class   ========  -->
+		<ActiveObjectClass>
+			<Id>1777188824594</Id>
+			<Name><![CDATA[FPSO]]></Name>
+			<AdditionalClassCode><![CDATA[// DADOS FIXOS (vindos do Excel)
+public String sigla = "";
+public String nome = "";
+public String bacia = "";
+public int anoDescomissionamento = 0;
+public double latitude = 0;
+public double longitude = 0;
+public double pesoTon = 0;
+
+// MATERIAIS GERADOS (calculados na etapa de separação)
+// Array de 16 posições
+public double[] qtdMateriais = new double[16];
+
+// LOG / RASTREAMENTO (atualizados durante a simulação)
+public String idInstalacaoSelecionada = "";
+public double tempoReboque = 0;
+public double distanciaReboque = 0;
+public double tempoChegadaInstalacao = 0;
+public double tempoInicioProcessamento = 0;
+public double tempoSaidaInstalacao = 0;
+public double tempoTotalSistema = 0;
+public boolean ocorreuFila = false;
+
+//
+public double[] qtdPendente = new double[16];        // toneladas ainda não destinadas
+public int materiaisPendentes = 0;                    // contador (de 16 → 0)
+public String[] destinadorPorMaterial = new String[16];
+public double[] distanciaCaminhaoPorMaterial = new double[16];
+public double[] tempoCaminhaoPorMaterial = new double[16];
+public double tempoSaidaSistema;                      // momento real do fim]]></AdditionalClassCode>
+			<Generic>false</Generic>
+			<GenericParameter>
+				<Id>1777188824599</Id>
+				<Name><![CDATA[1777188824599]]></Name>
+				<GenericParameterValue Class="CodeValue">
+					<Code><![CDATA[T extends Agent]]></Code>
+				</GenericParameterValue>
+				<GenericParameterLabel><![CDATA[Generic parameter:]]></GenericParameterLabel>
+			</GenericParameter>
+			<FlowChartsUsage>ENTITY</FlowChartsUsage>
+			<SamplesToKeep>100</SamplesToKeep>
+			<LimitNumberOfArrayElements>false</LimitNumberOfArrayElements>
+			<ElementsLimitValue>100</ElementsLimitValue>
+			<MakeDefaultViewArea>true</MakeDefaultViewArea>
+			<SceneGridColor/>
+			<SceneBackgroundColor>-4144960</SceneBackgroundColor>
+			<SceneSkybox>null</SceneSkybox>
+			<AgentProperties>
+				<EnvironmentDefinesInitialLocation>true</EnvironmentDefinesInitialLocation>
+				<RotateAnimationTowardsMovement>true</RotateAnimationTowardsMovement>
+				<RotateAnimationVertically>false</RotateAnimationVertically>
+				<VelocityCode Class="CodeUnitValue">
+					<Code><![CDATA[10]]></Code>
+					<Unit Class="SpeedUnits"><![CDATA[MPS]]></Unit>
+				</VelocityCode>
+				<PhysicalLength Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalLength>
+				<PhysicalWidth Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalWidth>
+				<PhysicalHeight Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalHeight>
+			</AgentProperties>
+			<EnvironmentProperties>
+					<EnableSteps>false</EnableSteps>
+					<StepDurationCode Class="CodeUnitValue">
+						<Code><![CDATA[1.0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+					</StepDurationCode>
+					<SpaceType>CONTINUOUS</SpaceType>
+					<WidthCode><![CDATA[500]]></WidthCode>
+					<HeightCode><![CDATA[500]]></HeightCode>
+					<ZHeightCode><![CDATA[0]]></ZHeightCode>
+					<ColumnsCountCode><![CDATA[100]]></ColumnsCountCode>
+					<RowsCountCode><![CDATA[100]]></RowsCountCode>
+					<NeigborhoodType>MOORE</NeigborhoodType>
+					<LayoutType>USER_DEF</LayoutType>
+					<NetworkType>USER_DEF</NetworkType>
+					<ConnectionsPerAgentCode><![CDATA[2]]></ConnectionsPerAgentCode>
+					<ConnectionsRangeCode><![CDATA[50]]></ConnectionsRangeCode>
+					<NeighborLinkFractionCode><![CDATA[0.95]]></NeighborLinkFractionCode>
+					<MCode><![CDATA[10]]></MCode>
+			</EnvironmentProperties>
+			<DatasetsCreationProperties>
+				<AutoCreate>true</AutoCreate>
+					<Id>1777188824593</Id>
+					<OccurrenceAtTime>true</OccurrenceAtTime>
+					<OccurrenceDate>1777190400000</OccurrenceDate>
+					<OccurrenceTime Class="CodeUnitValue">
+						<Code><![CDATA[0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</OccurrenceTime>
+					<RecurrenceCode Class="CodeUnitValue">
+						<Code><![CDATA[1]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</RecurrenceCode>
+			</DatasetsCreationProperties>
+			<ScaleRuler>
+				<Id>1777188824597</Id>
+				<Name><![CDATA[scale]]></Name>
+				<X>0</X><Y>-150</Y>
+				<PublicFlag>false</PublicFlag>
+				<PresentationFlag>false</PresentationFlag>
+				<ShowLabel>false</ShowLabel>
+				<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+				<Length>100</Length>
+				<Rotation>0</Rotation>
+				<ScaleType>BASED_ON_LENGTH</ScaleType>
+				<ModelLength>10</ModelLength>
+				<LengthUnits>METER</LengthUnits>
+				<Scale>10</Scale>
+				<InheritedFromParentAgentType>true</InheritedFromParentAgentType>
+			</ScaleRuler>
+			<CurrentLevel>1777188824600</CurrentLevel>
+			<ConnectionsId>1777188824595</ConnectionsId>
+			<AgentLinks>
+				<AgentLink>
+					<Id>1777188824595</Id>
+					<Name><![CDATA[connections]]></Name>
+					<X>50</X><Y>-50</Y>
+					<Label><X>15</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<HandleReceiveInConnections>false</HandleReceiveInConnections>
+					<AgentLinkType>COLLECTION_OF_LINKS</AgentLinkType>
+					<AgentLinkBidirectional>true</AgentLinkBidirectional>
+					<MessageType><![CDATA[Object]]></MessageType>
+					<LineStyle>SOLID</LineStyle>
+					<LineWidth>1</LineWidth>
+					<LineColor>-16777216</LineColor>
+					<LineZOrder>UNDER_AGENTS</LineZOrder>
+					<LineArrow>NONE</LineArrow>
+					<LineArrowPosition>END</LineArrowPosition>
+				</AgentLink>
+			</AgentLinks>
+
+
+			<Presentation>
+				<Level>
+					<Id>1777188824600</Id>
+					<Name><![CDATA[level]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<Z>0</Z>
+					<LevelVisibility>DIM_NON_CURRENT</LevelVisibility>
+
+
+				</Level>
+			</Presentation>
+
+		</ActiveObjectClass>
+		<!--   =========   Active Object Class   ========  -->
+		<ActiveObjectClass>
+			<Id>1777235451369</Id>
+			<Name><![CDATA[Instalacao]]></Name>
+			<AdditionalClassCode><![CDATA[// DADOS FIXOS (vindos do Excel)
+public String nome = "";
+public String estado = "";
+public double latitude = 0;
+public double longitude = 0;
+public int numEstruturas = 0;
+public double capArmazenamentoAnual = 0;
+public String restricaoAcesso = "";
+
+// VARIÁVEIS DINÂMICAS (mudam durante a simulação)
+public double pesoEmProcessamento = 0; // soma do pesoTon das FPSOs em desmantelamento
+
+// ESTOQUES DE MATERIAIS (acumulados aguardando despacho)
+// Array de 16 posições — mesma indexação da Parte 3.0
+public double[] estoques = new double[16];
+
+@SuppressWarnings("unchecked")
+public java.util.ArrayDeque<Object[]>[] contribuicoes = new java.util.ArrayDeque[16];
+// Cada entrada: { idFPSO, qtd }  — usar Object[] ou criar uma classe Contribuicao com 2 campos
+
+// CONTROLE DE DESPACHO (regra de 1 mês de espera máxima)
+// Registra o momento do último envio de cada material
+public double[] tempoUltimoDespacho = new double[16];
+
+// CONTADORES (atualizados durante a simulação)
+public int numFPSOsAtendidos = 0;
+public int numFPSOsEmFila = 0;
+public int numFPSOsEmProcessamento = 0;]]></AdditionalClassCode>
+			<Generic>false</Generic>
+			<GenericParameter>
+				<Id>1777235451374</Id>
+				<Name><![CDATA[1777235451374]]></Name>
+				<GenericParameterValue Class="CodeValue">
+					<Code><![CDATA[T extends Agent]]></Code>
+				</GenericParameterValue>
+				<GenericParameterLabel><![CDATA[Generic parameter:]]></GenericParameterLabel>
+			</GenericParameter>
+			<FlowChartsUsage>ENTITY</FlowChartsUsage>
+			<SamplesToKeep>100</SamplesToKeep>
+			<LimitNumberOfArrayElements>false</LimitNumberOfArrayElements>
+			<ElementsLimitValue>100</ElementsLimitValue>
+			<MakeDefaultViewArea>true</MakeDefaultViewArea>
+			<SceneGridColor/>
+			<SceneBackgroundColor>-4144960</SceneBackgroundColor>
+			<SceneSkybox>null</SceneSkybox>
+			<AgentProperties>
+				<EnvironmentDefinesInitialLocation>true</EnvironmentDefinesInitialLocation>
+				<RotateAnimationTowardsMovement>true</RotateAnimationTowardsMovement>
+				<RotateAnimationVertically>false</RotateAnimationVertically>
+				<VelocityCode Class="CodeUnitValue">
+					<Code><![CDATA[10]]></Code>
+					<Unit Class="SpeedUnits"><![CDATA[MPS]]></Unit>
+				</VelocityCode>
+				<PhysicalLength Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalLength>
+				<PhysicalWidth Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalWidth>
+				<PhysicalHeight Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalHeight>
+			</AgentProperties>
+			<EnvironmentProperties>
+					<EnableSteps>false</EnableSteps>
+					<StepDurationCode Class="CodeUnitValue">
+						<Code><![CDATA[1.0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+					</StepDurationCode>
+					<SpaceType>CONTINUOUS</SpaceType>
+					<WidthCode><![CDATA[500]]></WidthCode>
+					<HeightCode><![CDATA[500]]></HeightCode>
+					<ZHeightCode><![CDATA[0]]></ZHeightCode>
+					<ColumnsCountCode><![CDATA[100]]></ColumnsCountCode>
+					<RowsCountCode><![CDATA[100]]></RowsCountCode>
+					<NeigborhoodType>MOORE</NeigborhoodType>
+					<LayoutType>USER_DEF</LayoutType>
+					<NetworkType>USER_DEF</NetworkType>
+					<ConnectionsPerAgentCode><![CDATA[2]]></ConnectionsPerAgentCode>
+					<ConnectionsRangeCode><![CDATA[50]]></ConnectionsRangeCode>
+					<NeighborLinkFractionCode><![CDATA[0.95]]></NeighborLinkFractionCode>
+					<MCode><![CDATA[10]]></MCode>
+			</EnvironmentProperties>
+			<DatasetsCreationProperties>
+				<AutoCreate>true</AutoCreate>
+					<Id>1777235451368</Id>
+					<OccurrenceAtTime>true</OccurrenceAtTime>
+					<OccurrenceDate>1777276800000</OccurrenceDate>
+					<OccurrenceTime Class="CodeUnitValue">
+						<Code><![CDATA[0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</OccurrenceTime>
+					<RecurrenceCode Class="CodeUnitValue">
+						<Code><![CDATA[1]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</RecurrenceCode>
+			</DatasetsCreationProperties>
+			<ScaleRuler>
+				<Id>1777235451372</Id>
+				<Name><![CDATA[scale]]></Name>
+				<X>0</X><Y>-150</Y>
+				<PublicFlag>false</PublicFlag>
+				<PresentationFlag>false</PresentationFlag>
+				<ShowLabel>false</ShowLabel>
+				<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+				<Length>100</Length>
+				<Rotation>0</Rotation>
+				<ScaleType>BASED_ON_LENGTH</ScaleType>
+				<ModelLength>10</ModelLength>
+				<LengthUnits>METER</LengthUnits>
+				<Scale>10</Scale>
+				<InheritedFromParentAgentType>true</InheritedFromParentAgentType>
+			</ScaleRuler>
+			<CurrentLevel>1777235451375</CurrentLevel>
+			<ConnectionsId>1777235451370</ConnectionsId>
+			<AgentLinks>
+				<AgentLink>
+					<Id>1777235451370</Id>
+					<Name><![CDATA[connections]]></Name>
+					<X>50</X><Y>-50</Y>
+					<Label><X>15</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<HandleReceiveInConnections>false</HandleReceiveInConnections>
+					<AgentLinkType>COLLECTION_OF_LINKS</AgentLinkType>
+					<AgentLinkBidirectional>true</AgentLinkBidirectional>
+					<MessageType><![CDATA[Object]]></MessageType>
+					<LineStyle>SOLID</LineStyle>
+					<LineWidth>1</LineWidth>
+					<LineColor>-16777216</LineColor>
+					<LineZOrder>UNDER_AGENTS</LineZOrder>
+					<LineArrow>NONE</LineArrow>
+					<LineArrowPosition>END</LineArrowPosition>
+				</AgentLink>
+			</AgentLinks>
+
+
+			<Presentation>
+				<Level>
+					<Id>1777235451375</Id>
+					<Name><![CDATA[level]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<Z>0</Z>
+					<LevelVisibility>DIM_NON_CURRENT</LevelVisibility>
+
+
+				</Level>
+			</Presentation>
+
+		</ActiveObjectClass>
+		<!--   =========   Active Object Class   ========  -->
+		<ActiveObjectClass>
+			<Id>1777235497642</Id>
+			<Name><![CDATA[Destinador]]></Name>
+			<AdditionalClassCode><![CDATA[// DADOS FIXOS (vindos do Excel)
+public String tipoMaterial = "";
+public String razaoSocial = "";
+public String cnpj = "";
+public String estado = "";
+public String municipio = "";
+public double latitude = 0;
+public double longitude = 0;
+public double participacaoMercado = 0;
+public double capMinTonAno = 0;
+public double capMaxTonAno = 0;
+public double capMediaTonAno = 0;
+
+
+// VARIÁVEIS DINÂMICAS (mudam durante a simulação)
+public double capAtualAno = 0;          // capacidade sorteada para o ano corrente
+public double volumeRecebidoNoAno = 0;  // toneladas já recebidas no ano corrente
+public double volumeRecebidoNoMes = 0;  // toneladas recebidas no mês corrente (para log)
+public double totalRecebidoHistorico = 0; // acumulado total desde o início
+
+public boolean temCapacidade(double volumeAEnviar) {
+    return (volumeRecebidoNoAno + volumeAEnviar) <= capAtualAno;
+}]]></AdditionalClassCode>
+			<Generic>false</Generic>
+			<GenericParameter>
+				<Id>1777235497647</Id>
+				<Name><![CDATA[1777235497647]]></Name>
+				<GenericParameterValue Class="CodeValue">
+					<Code><![CDATA[T extends Agent]]></Code>
+				</GenericParameterValue>
+				<GenericParameterLabel><![CDATA[Generic parameter:]]></GenericParameterLabel>
+			</GenericParameter>
+			<FlowChartsUsage>ENTITY</FlowChartsUsage>
+			<SamplesToKeep>100</SamplesToKeep>
+			<LimitNumberOfArrayElements>false</LimitNumberOfArrayElements>
+			<ElementsLimitValue>100</ElementsLimitValue>
+			<MakeDefaultViewArea>true</MakeDefaultViewArea>
+			<SceneGridColor/>
+			<SceneBackgroundColor>-4144960</SceneBackgroundColor>
+			<SceneSkybox>null</SceneSkybox>
+			<AgentProperties>
+				<EnvironmentDefinesInitialLocation>true</EnvironmentDefinesInitialLocation>
+				<RotateAnimationTowardsMovement>true</RotateAnimationTowardsMovement>
+				<RotateAnimationVertically>false</RotateAnimationVertically>
+				<VelocityCode Class="CodeUnitValue">
+					<Code><![CDATA[10]]></Code>
+					<Unit Class="SpeedUnits"><![CDATA[MPS]]></Unit>
+				</VelocityCode>
+				<PhysicalLength Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalLength>
+				<PhysicalWidth Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalWidth>
+				<PhysicalHeight Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalHeight>
+			</AgentProperties>
+			<EnvironmentProperties>
+					<EnableSteps>false</EnableSteps>
+					<StepDurationCode Class="CodeUnitValue">
+						<Code><![CDATA[1.0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+					</StepDurationCode>
+					<SpaceType>CONTINUOUS</SpaceType>
+					<WidthCode><![CDATA[500]]></WidthCode>
+					<HeightCode><![CDATA[500]]></HeightCode>
+					<ZHeightCode><![CDATA[0]]></ZHeightCode>
+					<ColumnsCountCode><![CDATA[100]]></ColumnsCountCode>
+					<RowsCountCode><![CDATA[100]]></RowsCountCode>
+					<NeigborhoodType>MOORE</NeigborhoodType>
+					<LayoutType>USER_DEF</LayoutType>
+					<NetworkType>USER_DEF</NetworkType>
+					<ConnectionsPerAgentCode><![CDATA[2]]></ConnectionsPerAgentCode>
+					<ConnectionsRangeCode><![CDATA[50]]></ConnectionsRangeCode>
+					<NeighborLinkFractionCode><![CDATA[0.95]]></NeighborLinkFractionCode>
+					<MCode><![CDATA[10]]></MCode>
+			</EnvironmentProperties>
+			<DatasetsCreationProperties>
+				<AutoCreate>true</AutoCreate>
+					<Id>1777235497641</Id>
+					<OccurrenceAtTime>true</OccurrenceAtTime>
+					<OccurrenceDate>1777276800000</OccurrenceDate>
+					<OccurrenceTime Class="CodeUnitValue">
+						<Code><![CDATA[0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</OccurrenceTime>
+					<RecurrenceCode Class="CodeUnitValue">
+						<Code><![CDATA[1]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</RecurrenceCode>
+			</DatasetsCreationProperties>
+			<ScaleRuler>
+				<Id>1777235497645</Id>
+				<Name><![CDATA[scale]]></Name>
+				<X>0</X><Y>-150</Y>
+				<PublicFlag>false</PublicFlag>
+				<PresentationFlag>false</PresentationFlag>
+				<ShowLabel>false</ShowLabel>
+				<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+				<Length>100</Length>
+				<Rotation>0</Rotation>
+				<ScaleType>BASED_ON_LENGTH</ScaleType>
+				<ModelLength>10</ModelLength>
+				<LengthUnits>METER</LengthUnits>
+				<Scale>10</Scale>
+				<InheritedFromParentAgentType>true</InheritedFromParentAgentType>
+			</ScaleRuler>
+			<CurrentLevel>1777235497648</CurrentLevel>
+			<ConnectionsId>1777235497643</ConnectionsId>
+			<AgentLinks>
+				<AgentLink>
+					<Id>1777235497643</Id>
+					<Name><![CDATA[connections]]></Name>
+					<X>50</X><Y>-50</Y>
+					<Label><X>15</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<HandleReceiveInConnections>false</HandleReceiveInConnections>
+					<AgentLinkType>COLLECTION_OF_LINKS</AgentLinkType>
+					<AgentLinkBidirectional>true</AgentLinkBidirectional>
+					<MessageType><![CDATA[Object]]></MessageType>
+					<LineStyle>SOLID</LineStyle>
+					<LineWidth>1</LineWidth>
+					<LineColor>-16777216</LineColor>
+					<LineZOrder>UNDER_AGENTS</LineZOrder>
+					<LineArrow>NONE</LineArrow>
+					<LineArrowPosition>END</LineArrowPosition>
+				</AgentLink>
+			</AgentLinks>
+
+
+			<Presentation>
+				<Level>
+					<Id>1777235497648</Id>
+					<Name><![CDATA[level]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<Z>0</Z>
+					<LevelVisibility>DIM_NON_CURRENT</LevelVisibility>
+
+
+				</Level>
+			</Presentation>
+
+		</ActiveObjectClass>
+		<!--   =========   Active Object Class   ========  -->
+		<ActiveObjectClass>
+			<Id>1777308490140</Id>
+			<Name><![CDATA[Lote]]></Name>
+			<AdditionalClassCode><![CDATA[public Destinador destinador;
+public int materialIdx;            // 0..15
+public double distanciaKm;
+public double tempoMeses;
+public double volumeTotal = 0;
+public java.util.ArrayList<Object[]> contribuicoes = new java.util.ArrayList<>();
+// cada entrada: { FPSO origem, double qtdContribuida }]]></AdditionalClassCode>
+			<Generic>false</Generic>
+			<GenericParameter>
+				<Id>1777308490145</Id>
+				<Name><![CDATA[1777308490145]]></Name>
+				<GenericParameterValue Class="CodeValue">
+					<Code><![CDATA[T extends Agent]]></Code>
+				</GenericParameterValue>
+				<GenericParameterLabel><![CDATA[Generic parameter:]]></GenericParameterLabel>
+			</GenericParameter>
+			<FlowChartsUsage>ENTITY</FlowChartsUsage>
+			<SamplesToKeep>100</SamplesToKeep>
+			<LimitNumberOfArrayElements>false</LimitNumberOfArrayElements>
+			<ElementsLimitValue>100</ElementsLimitValue>
+			<MakeDefaultViewArea>true</MakeDefaultViewArea>
+			<SceneGridColor/>
+			<SceneBackgroundColor>-4144960</SceneBackgroundColor>
+			<SceneSkybox>null</SceneSkybox>
+			<AgentProperties>
+				<EnvironmentDefinesInitialLocation>true</EnvironmentDefinesInitialLocation>
+				<RotateAnimationTowardsMovement>true</RotateAnimationTowardsMovement>
+				<RotateAnimationVertically>false</RotateAnimationVertically>
+				<VelocityCode Class="CodeUnitValue">
+					<Code><![CDATA[10]]></Code>
+					<Unit Class="SpeedUnits"><![CDATA[MPS]]></Unit>
+				</VelocityCode>
+				<PhysicalLength Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalLength>
+				<PhysicalWidth Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalWidth>
+				<PhysicalHeight Class="CodeUnitValue">
+					<Code><![CDATA[1]]></Code>
+					<Unit Class="LengthUnits"><![CDATA[METER]]></Unit>
+				</PhysicalHeight>
+			</AgentProperties>
+			<EnvironmentProperties>
+					<EnableSteps>false</EnableSteps>
+					<StepDurationCode Class="CodeUnitValue">
+						<Code><![CDATA[1.0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[SECOND]]></Unit>
+					</StepDurationCode>
+					<SpaceType>CONTINUOUS</SpaceType>
+					<WidthCode><![CDATA[500]]></WidthCode>
+					<HeightCode><![CDATA[500]]></HeightCode>
+					<ZHeightCode><![CDATA[0]]></ZHeightCode>
+					<ColumnsCountCode><![CDATA[100]]></ColumnsCountCode>
+					<RowsCountCode><![CDATA[100]]></RowsCountCode>
+					<NeigborhoodType>MOORE</NeigborhoodType>
+					<LayoutType>USER_DEF</LayoutType>
+					<NetworkType>USER_DEF</NetworkType>
+					<ConnectionsPerAgentCode><![CDATA[2]]></ConnectionsPerAgentCode>
+					<ConnectionsRangeCode><![CDATA[50]]></ConnectionsRangeCode>
+					<NeighborLinkFractionCode><![CDATA[0.95]]></NeighborLinkFractionCode>
+					<MCode><![CDATA[10]]></MCode>
+			</EnvironmentProperties>
+			<DatasetsCreationProperties>
+				<AutoCreate>true</AutoCreate>
+					<Id>1777308490139</Id>
+					<OccurrenceAtTime>true</OccurrenceAtTime>
+					<OccurrenceDate>1777363200000</OccurrenceDate>
+					<OccurrenceTime Class="CodeUnitValue">
+						<Code><![CDATA[0]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</OccurrenceTime>
+					<RecurrenceCode Class="CodeUnitValue">
+						<Code><![CDATA[1]]></Code>
+						<Unit Class="TimeUnits"><![CDATA[MONTH]]></Unit>
+					</RecurrenceCode>
+			</DatasetsCreationProperties>
+			<ScaleRuler>
+				<Id>1777308490143</Id>
+				<Name><![CDATA[scale]]></Name>
+				<X>0</X><Y>-150</Y>
+				<PublicFlag>false</PublicFlag>
+				<PresentationFlag>false</PresentationFlag>
+				<ShowLabel>false</ShowLabel>
+				<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+				<Length>100</Length>
+				<Rotation>0</Rotation>
+				<ScaleType>BASED_ON_LENGTH</ScaleType>
+				<ModelLength>10</ModelLength>
+				<LengthUnits>METER</LengthUnits>
+				<Scale>10</Scale>
+				<InheritedFromParentAgentType>true</InheritedFromParentAgentType>
+			</ScaleRuler>
+			<CurrentLevel>1777308490146</CurrentLevel>
+			<ConnectionsId>1777308490141</ConnectionsId>
+			<AgentLinks>
+				<AgentLink>
+					<Id>1777308490141</Id>
+					<Name><![CDATA[connections]]></Name>
+					<X>50</X><Y>-50</Y>
+					<Label><X>15</X><Y>0</Y></Label>
+					<PublicFlag>false</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>true</ShowLabel>
+					<HandleReceiveInConnections>false</HandleReceiveInConnections>
+					<AgentLinkType>COLLECTION_OF_LINKS</AgentLinkType>
+					<AgentLinkBidirectional>true</AgentLinkBidirectional>
+					<MessageType><![CDATA[Object]]></MessageType>
+					<LineStyle>SOLID</LineStyle>
+					<LineWidth>1</LineWidth>
+					<LineColor>-16777216</LineColor>
+					<LineZOrder>UNDER_AGENTS</LineZOrder>
+					<LineArrow>NONE</LineArrow>
+					<LineArrowPosition>END</LineArrowPosition>
+				</AgentLink>
+			</AgentLinks>
+
+
+			<Presentation>
+				<Level>
+					<Id>1777308490146</Id>
+					<Name><![CDATA[level]]></Name>
+					<X>0</X><Y>0</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<Z>0</Z>
+					<LevelVisibility>DIM_NON_CURRENT</LevelVisibility>
+
+
+				</Level>
+			</Presentation>
+
+		</ActiveObjectClass>
+	</ActiveObjectClasses>
+	<DifferentialEquationsMethod>EULER</DifferentialEquationsMethod>
+	<MixedEquationsMethod>RK45_NEWTON</MixedEquationsMethod>
+	<AlgebraicEquationsMethod>MODIFIED_NEWTON</AlgebraicEquationsMethod>
+	<AbsoluteAccuracy>1.0E-5</AbsoluteAccuracy>
+	<FixedTimeStep>0.001</FixedTimeStep>
+	<RelativeAccuracy>1.0E-5</RelativeAccuracy>
+	<TimeAccuracy>1.0E-5</TimeAccuracy>
+	<InspectionWindowColorTheme>DEFAULT</InspectionWindowColorTheme>
+	<Frame>
+		<Id>1777188281276</Id>
+		<Width>1000</Width>
+		<Height>600</Height>
+	</Frame>
+	<Database>
+		<Id>1777188281270</Id>
+		<Logging>false</Logging>
+		<AutoExport>false</AutoExport>
+		<ShutdownCompact>false</ShutdownCompact>
+		<ImportSettings>
+		</ImportSettings>
+		<ExportSettings>
+		</ExportSettings>
+	</Database>
+
+	<RunConfiguration ActiveObjectClassId="1777188281278">
+		<Id>1777188281289</Id>
+		<Name><![CDATA[RunConfiguration]]></Name>
+		<MaximumMemory>512</MaximumMemory>
+		<ModelTimeProperties>
+			<StopOption><![CDATA[Stop at specified time]]></StopOption>
+			<InitialDate><![CDATA[1777161600000]]></InitialDate>	
+			<InitialTime><![CDATA[0.0]]></InitialTime>	
+			<FinalDate><![CDATA[1779753600000]]></FinalDate>	
+			<FinalTime><![CDATA[100.0]]></FinalTime>	
+		</ModelTimeProperties>
+		<AnimationProperties>
+			<StopNever>true</StopNever>
+			<ExecutionMode>realTimeScaled</ExecutionMode>
+			<RealTimeScale>1.0</RealTimeScale>
+			<EnableZoomAndPanning>true</EnableZoomAndPanning>
+			<EnableDeveloperPanel>false</EnableDeveloperPanel>
+			<ShowDeveloperPanelOnStart>false</ShowDeveloperPanelOnStart>
+		</AnimationProperties>
+		<Inputs>		
+		</Inputs>
+		<Outputs>
+		</Outputs>
+	</RunConfiguration>
+	<Experiments>
+		<!--   =========   Simulation Experiment   ========  -->
+		<SimulationExperiment ActiveObjectClassId="1777188281278">
+			<Id>1777188281286</Id>
+			<Name><![CDATA[Simulation]]></Name>
+			<CommandLineArguments><![CDATA[]]></CommandLineArguments>
+			<MaximumMemory>512</MaximumMemory>
+			<RandomNumberGenerationType>fixedSeed</RandomNumberGenerationType>
+			<CustomGeneratorCode>new Random()</CustomGeneratorCode>
+			<SeedValue>1</SeedValue>
+			<SelectionModeForSimultaneousEvents>LIFO</SelectionModeForSimultaneousEvents>
+			<VmArgs><![CDATA[]]></VmArgs>
+			<LoadRootFromSnapshot>false</LoadRootFromSnapshot>
+
+			<Presentation>
+				<Text>
+					<Id>1777188281288</Id>
+					<Name><![CDATA[text]]></Name>
+					<X>50</X><Y>30</Y>
+					<Label><X>10</X><Y>0</Y></Label>
+					<PublicFlag>true</PublicFlag>
+					<PresentationFlag>true</PresentationFlag>
+					<ShowLabel>false</ShowLabel>
+					<DrawMode>SHAPE_DRAW_2D3D</DrawMode>
+					<EmbeddedIcon>false</EmbeddedIcon>
+					<Z>0</Z>
+					<Rotation>0.0</Rotation>
+					<Color>-12490271</Color>
+					<Text><![CDATA[Reciclagem_FPSO]]></Text>
+					<Font>
+						<Name>SansSerif</Name>
+						<Size>24</Size>
+						<Style>0</Style>
+					</Font>
+					<Alignment>LEFT</Alignment>
+				</Text>
+			</Presentation>
+
+			<Parameters>
+			</Parameters>
+			<PresentationProperties>
+				<EnableZoomAndPanning>true</EnableZoomAndPanning>
+				<ExecutionMode><![CDATA[realTimeScaled]]></ExecutionMode>
+				<Title><![CDATA[Reciclagem_FPSO : Simulation]]></Title>
+				<EnableDeveloperPanel>true</EnableDeveloperPanel>
+				<ShowDeveloperPanelOnStart>false</ShowDeveloperPanelOnStart>
+				<RealTimeScale>1.0</RealTimeScale>
+			</PresentationProperties>
+			<ModelTimeProperties>
+				<StopOption><![CDATA[Stop at specified time]]></StopOption>
+				<InitialDate><![CDATA[1777161600000]]></InitialDate>
+				<InitialTime><![CDATA[0.0]]></InitialTime>
+				<FinalDate><![CDATA[1870473600000]]></FinalDate>
+				<FinalTime><![CDATA[36.0]]></FinalTime>
+			</ModelTimeProperties>
+			<BypassInitialScreen>true</BypassInitialScreen>
+		</SimulationExperiment>	
+	</Experiments>
+	<ModelResources>
+		<Resource>
+			<Id>1777188382201</Id>
+			<Path><![CDATA[C:/Users/tiago/Downloads/Dados-NOTAÇÃO AMERICANA.xlsx]]></Path>
+			<ReferencedFromUserCode>false</ReferencedFromUserCode>
+			<Location>FILE_SYSTEM</Location>
+		</Resource>
+	</ModelResources>
+    <RequiredLibraryReference>
+		<LibraryName><![CDATA[com.anylogic.libraries.modules.markup_descriptors]]></LibraryName>
+		<VersionMajor>1</VersionMajor>
+		<VersionMinor>0</VersionMinor>
+		<VersionBuild>0</VersionBuild>
+    </RequiredLibraryReference>
+    <RequiredLibraryReference>
+		<LibraryName><![CDATA[com.anylogic.libraries.processmodeling]]></LibraryName>
+		<VersionMajor>8</VersionMajor>
+		<VersionMinor>0</VersionMinor>
+		<VersionBuild>5</VersionBuild>
+    </RequiredLibraryReference>
+</Model>
+<ConvertersApplied>
+	<Uuid>9f7858c9-b2c8-4ead-9244-fd08833f642b</Uuid>
+	<Uuid>404652e6-561a-404c-aab2-ab7415f40ef5</Uuid>
+	<Uuid>6fd6cd57-6dfe-4fc6-be0b-c74065351957</Uuid>
+	<Uuid>3325dc48-3ad4-41e3-836f-dfd0e98fe1ed</Uuid>
+	<Uuid>bb27038a-0f3a-48bb-b235-4a44066a14aa</Uuid>
+	<Uuid>3f69ef3d-706e-41a6-8af0-11658c5eef68</Uuid>
+	<Uuid>3f6fe405-e047-4304-91d6-6eee206d1106</Uuid>
+	<Uuid>820d2b51-5b4a-48e7-b0b6-e46418e3c0f2</Uuid>
+	<Uuid>630818fa-8975-4b70-976f-03180dce01db</Uuid>
+	<Uuid>7c7e471c-004e-495e-a4ad-d840620ab38e</Uuid>
+	<Uuid>3e38ff63-1f70-4ec0-b42c-e879b146785d</Uuid>
+	<Uuid>b1eb86e4-14b3-405c-8257-56b80f1b485d</Uuid>
+	<Uuid>d55f9fb6-86bb-45ea-9db1-79cecfa0ce91</Uuid>
+	<Uuid>ab77aafd-8f02-4354-b789-928d45b1f73c</Uuid>
+	<Uuid>e4f14fd7-1c4a-42e9-b91d-db2415f475db</Uuid>
+	<Uuid>6d208120-6c7a-45a6-b411-402f18890d9b</Uuid>
+	<Uuid>1816cdd0-177c-4973-9e88-dd8b95318556</Uuid>
+	<Uuid>5c23f62f-06dc-46ad-8ead-688ec434e3e5</Uuid>
+	<Uuid>5c7d7990-3f35-41eb-ae16-d0c16098acc6</Uuid>
+	<Uuid>02a16c52-a834-4f30-b6af-a6aee51a294e</Uuid>
+	<Uuid>f0988929-2718-4984-a1b6-c1f2ce152f1f</Uuid>
+	<Uuid>1c9d9cfe-ea2b-43f9-8f62-dc31d8ed3ae1</Uuid>
+	<Uuid>34cb742a-8ba4-47a7-87e6-f2685fe69e97</Uuid>
+	<Uuid>4fe10751-c399-4752-94b7-30113ad45070</Uuid>
+	<Uuid>c13fe5ac-6466-446e-886a-12df1431b1eb</Uuid>
+	<Uuid>714f9ca2-426e-4bff-8569-2d18f58fdcf8</Uuid>
+	<Uuid>045aeb5f-1087-4ac7-9702-a49404e7f7e8</Uuid>
+	<Uuid>840e9a0a-de98-4b7d-a172-f9bbda2d6b98</Uuid>
+	<Uuid>e342358b-75ed-4812-9376-6043fb6cb473</Uuid>
+	<Uuid>f3d5ccdc-1bb3-466f-871d-f6b92a26cbb4</Uuid>
+	<Uuid>59acb6fb-561c-4038-b722-a596a748b3c7</Uuid>
+	<Uuid>be7e6726-05c0-4228-821d-a8df91aeb5bc</Uuid>
+	<Uuid>df4a6a60-9ce8-4c6c-91c0-ad5a5d732259</Uuid>
+	<Uuid>47491eb9-4606-42bd-8399-125a2b95fded</Uuid>
+	<Uuid>9b2d1306-5d19-439a-8f2c-b144dd7e22fa</Uuid>
+	<Uuid>ef421152-8732-4f97-9acb-c8e9a6890d5e</Uuid>
+	<Uuid>d48f8080-25b1-44f5-8322-7bf2712ff974</Uuid>
+	<Uuid>6c4de826-daad-4cd4-b703-51dfe803e822</Uuid>
+	<Uuid>01af22d6-6889-4e98-a3df-e6eddc40fc92</Uuid>
+	<Uuid>ea3b3dbe-cca2-4bde-957b-feaef7e18789</Uuid>
+	<Uuid>e737c8c6-b526-4f88-b89e-554e205b0614</Uuid>
+	<Uuid>efd24e87-d7f7-425f-9cb0-3ee17c7b2116</Uuid>
+	<Uuid>a62607e6-047e-4910-a1ec-5426bf9283b5</Uuid>
+	<Uuid>64dceb5b-de05-47c7-8e40-e9b293e80d75</Uuid>
+	<Uuid>8d51c652-6aee-4de8-ba03-47b289a13ec5</Uuid>
+	<Uuid>51d7b5ce-5664-4750-b1a0-fabcdc31e49a</Uuid>
+	<Uuid>6522e3af-aa9e-421c-b667-e11db73cd8ca</Uuid>
+	<Uuid>9ac073a0-7abf-4dff-826f-9c44d4780590</Uuid>
+	<Uuid>2da9c21c-adc7-405a-a36e-46fbd9dfcd42</Uuid>
+	<Uuid>fe4d1053-9c84-4221-bac7-cb489a7064ff</Uuid>
+	<Uuid>1f005f88-e6d7-4bdc-81fa-3acf4c89cf64</Uuid>
+	<Uuid>42dc5a7c-d7b1-4653-92b9-9359b46cc2d4</Uuid>
+	<Uuid>e25721a9-34f9-479c-a4c3-31f5ec9e117d</Uuid>
+	<Uuid>506d1de3-06df-4131-9e88-e43f1768e3d8</Uuid>
+	<Uuid>e6625695-25a2-43d0-9056-1e9a1a594b1e</Uuid>
+	<Uuid>91990287-4edf-4e38-aa6c-66d0e906807b</Uuid>
+	<Uuid>2216cdd0-177c-5678-9e88-dd8b95312234</Uuid>
+	<Uuid>1737c8c6-b526-4dd8-589e-ee4e205b06f4</Uuid>
+	<Uuid>6a43bef6-8b70-4253-a828-82c3ab399655</Uuid>
+	<Uuid>0a27038a-0f3a-48bb-b235-4a44066a1402</Uuid>
+	<Uuid>0a9ec2c3-5e18-4c0a-a183-fd86d9d9a08b</Uuid>
+	<Uuid>2216cdd0-177c-5678-9e88-dd8b95313334</Uuid>
+</ConvertersApplied>
+</AnyLogicWorkspace>
