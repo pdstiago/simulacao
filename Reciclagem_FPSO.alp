@@ -832,7 +832,7 @@ tentarLiberar();]]></Action>
 					<ShowLabel>true</ShowLabel>
 					<ResourceReference>
 						<PackageName><![CDATA[reciclagem_fpso]]></PackageName>
-						<ClassName><![CDATA[C:/Users/tiago/Downloads/Dados-NOTAÇÃO AMERICANA.xlsx]]></ClassName>
+						<ClassName><![CDATA[Dados-NOTAÇÃO AMERICANA.xlsx]]></ClassName>
 					</ResourceReference>
 					<SaveInSnapshot>false</SaveInSnapshot>
 					<LoadOnStartup>true</LoadOnStartup>
@@ -2699,8 +2699,8 @@ public java.util.ArrayList<Object[]> contribuicoes = new java.util.ArrayList<>()
 	</Experiments>
 	<ModelResources>
 		<Resource>
-			<Id>1777188382201</Id>
-			<Path><![CDATA[C:/Users/tiago/Downloads/Dados-NOTAÇÃO AMERICANA.xlsx]]></Path>
+			<Id>1777322773591</Id>
+			<Path><![CDATA[Dados-NOTAÇÃO AMERICANA.xlsx]]></Path>
 			<ReferencedFromUserCode>false</ReferencedFromUserCode>
 			<Location>FILE_SYSTEM</Location>
 		</Resource>
